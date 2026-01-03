@@ -1,0 +1,208 @@
+version: "3.8"
+
+x-airflow-common: &airflow-common
+  build:
+    context: ./airflow
+    dockerfile: Dockerfile
+  environment:
+    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+    - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW_FERNET_KEY:-}
+    - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW_SECRET_KEY:-supersecretkey}
+    - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+    - SQLSERVER_HOST=sqlserver
+    - SQLSERVER_PORT=1433
+    - SQLSERVER_USER=sa
+    - SQLSERVER_PASSWORD=${DB_PASSWORD}
+    - SQLSERVER_DATABASE=datawarehouse
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./airflow/logs:/opt/airflow/logs
+    - ./src:/opt/airflow/src
+    - ./data:/opt/airflow/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+    sqlserver:
+      condition: service_healthy
+
+services:
+  # =============================================================================
+  # SQL Server 2022 - Data Warehouse
+  # =============================================================================
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: mds_sqlserver
+    hostname: sqlserver
+    ports:
+      - "1433:1433"
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${DB_PASSWORD}
+      - MSSQL_PID=Developer
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+      - ./sql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "${DB_PASSWORD}" -C -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - mds_network
+
+  # =============================================================================
+  # PostgreSQL - Airflow Metadata Database
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: mds_postgres
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mds_network
+
+  # =============================================================================
+  # Airflow Init - Database Migration & User Creation
+  # =============================================================================
+  airflow-init:
+    <<: *airflow-common
+    container_name: mds_airflow_init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username ${AIRFLOW_ADMIN_USER:-admin} \
+          --password ${AIRFLOW_ADMIN_PASSWORD:-admin} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+        echo "Airflow initialization complete"
+    networks:
+      - mds_network
+
+  # =============================================================================
+  # Airflow Webserver
+  # =============================================================================
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: mds_airflow_webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - mds_network
+
+  # =============================================================================
+  # Airflow Scheduler
+  # =============================================================================
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: mds_airflow_scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname) || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - mds_network
+
+  # =============================================================================
+  # Apache Superset - Visualization
+  # =============================================================================
+  superset:
+    build:
+      context: ./superset
+      dockerfile: Dockerfile
+    container_name: mds_superset
+    ports:
+      - "8088:8088"
+    environment:
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-supersecretkey123}
+      - SQLSERVER_HOST=sqlserver
+      - SQLSERVER_PORT=1433
+      - SQLSERVER_USER=sa
+      - SQLSERVER_PASSWORD=${DB_PASSWORD}
+      - SQLSERVER_DATABASE=datawarehouse
+    volumes:
+      - superset_data:/app/superset_home
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    networks:
+      - mds_network
+
+  # =============================================================================
+  # SQL Server Init - Schema Creation
+  # =============================================================================
+  sqlserver-init:
+    image: mcr.microsoft.com/mssql-tools18
+    container_name: mds_sqlserver_init
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    volumes:
+      - ./sql:/sql
+      - ./scripts:/scripts
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo "Waiting for SQL Server to be ready..."
+        sleep 10
+        echo "Creating database and schemas..."
+        /opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P "${DB_PASSWORD}" -C -Q "
+          IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'datawarehouse')
+          BEGIN
+            CREATE DATABASE datawarehouse;
+          END
+        "
+        for file in /sql/*.sql; do
+          echo "Executing $$file..."
+          /opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P "${DB_PASSWORD}" -C -d datawarehouse -i "$$file"
+        done
+        echo "Database initialization complete!"
+    networks:
+      - mds_network
+
+networks:
+  mds_network:
+    driver: bridge
+    name: microsoft_data_stack
+
+volumes:
+  sqlserver_data:
+    name: mds_sqlserver_data
+  postgres_data:
+    name: mds_postgres_data
+  superset_data:
+    name: mds_superset_data

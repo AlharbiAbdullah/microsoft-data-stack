@@ -1,0 +1,19 @@
+# Airflow providers
+apache-airflow-providers-microsoft-mssql>=3.6.0
+
+# Data processing
+pandas>=2.0.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# SQL Server connectivity
+pyodbc>=5.0.0
+sqlalchemy>=2.0.0
+
+# Data validation
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Utilities
+python-dateutil>=2.8.0
+uuid6>=2024.1.12
