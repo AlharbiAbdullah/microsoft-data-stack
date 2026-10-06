@@ -1,236 +1,89 @@
-# Microsoft Data Stack
+# microsoft-data-stack
 
-A containerized data engineering solution demonstrating end-to-end data pipeline capabilities: ingestion from multiple sources, multi-layer data warehouse architecture, and quality monitoring dashboards.
+Airflow loads API and CSV sales data into a SQL Server star schema that Superset reads, in Docker Compose.
 
-## Architecture
+Status: working · portfolio project · 2026-01
 
-![Microsoft Data Stack architecture](docs/diagrams/architecture.excalidraw.svg)
+![The Fake Store API and sample CSVs are extracted by Airflow into raw tables in SQL Server. A second Airflow DAG cleans them into staging, loads a star schema and rebuilds the marts. Superset queries the dashboard views. An init container creates the tables and views at startup, and Ruff, mypy and pytest check the code.](docs/diagrams/architecture.excalidraw.svg)
 
-## Tech Stack
+## What it does
 
-![Microsoft Data Stack tech stack](docs/diagrams/tech-stack.excalidraw.svg)
+Turns e-commerce sales records into answers on revenue, profit, top products, categories,
+regions and customer segments. Every ingestion run logs, per source, the records it received
+and the records it stored.
 
-| Component | Technology |
-|-----------|------------|
-| Database | SQL Server 2022 |
-| Orchestration | Apache Airflow 2.8 |
-| Visualization | Apache Superset 3.1 |
-| Data Processing | Python (pandas, requests) |
-| Infrastructure | Docker Compose |
+## How it works
 
-## Getting Started
+1. **Source.** The Fake Store API (`/products`, `/users`, `/carts`, no key) and three
+   sample CSVs in `data/sample/`: products, customers and sales.
+2. **Schema.** At startup the `sqlserver-init` container creates the `datawarehouse`
+   database and runs `sql/01` to `sql/07` in order with sqlcmd: schemas, tables, views.
+3. **Ingest.** The `data_ingestion` DAG extracts the API and the CSVs in parallel, flattens
+   nested records into `raw.*` tables and logs received and stored counts per source.
+4. **Warehouse.** SQL Server 2022 holds five schemas: `raw`, `staging`, `dw` (the star
+   schema), `mart` and `quality` (the run log). Views in `dw` and `quality` feed the dashboards.
+5. **Transform.** The `data_transformation` DAG cleans and validates the latest raw batch,
+   loads the star schema with SCD Type 2 dimensions, then rebuilds the four marts.
+6. **Consume.** Apache Superset starts connected to the warehouse. The sales and quality
+   dashboards are built from the views; SQL Lab queries any layer.
+7. **Checks.** Ruff lints and formats, mypy checks types, pytest runs the unit tests with
+   the API mocked.
 
-### Prerequisites
+## Tech stack
 
-- Docker Desktop 4.0+
-- Docker Compose 2.0+
-- 8GB RAM available for containers
+![Tech stack: Docker Compose; Fake Store API, sample CSVs; Apache Airflow; SQL Server; Apache Superset; sqlcmd; Apache Airflow; uv, Ruff, pytest](docs/diagrams/tech-stack.excalidraw.svg)
 
-### Setup
+## Decisions
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd microsoft_data_stack
-   ```
+- **Raw kept as received over cleaning on the way in:** for audit. Each raw row keeps the
+  source JSON or CSV line and a batch id. Cost: raw tables grow on every run, and staging
+  reads only the latest batch.
+- **Airflow over hand-run scripts:** scheduling, monitoring and retries (two per task).
+  Cost: a webserver, a scheduler, an init container and a Postgres metadata database.
+- **Docker Compose over a manual install:** the whole platform starts with one command.
+  Cost: seven containers on one machine, two of them one-shot init jobs.
 
-2. **Create environment file**
-   ```bash
-   cp .env.example .env
-   # Edit .env to customize passwords if needed
-   ```
+## Run it
 
-3. **Start the stack**
-   ```bash
-   docker compose up -d
-   ```
+Needs Docker with Compose, and internet access for the Fake Store API.
 
-4. **Wait for initialization** (~2-3 minutes)
-   ```bash
-   # Check container status
-   docker compose ps
-
-   # View logs
-   docker compose logs -f sqlserver-init
-   ```
-
-### Access Points
-
-| Service | URL | Credentials |
-|---------|-----|-------------|
-| Airflow | http://localhost:8080 | admin / admin |
-| Superset | http://localhost:8088 | admin / admin |
-| SQL Server | localhost:1433 | sa / (from .env) |
-
-## Project Structure
-
-```
-microsoft_data_stack/
-├── docker-compose.yml      # Container orchestration
-├── .env.example            # Environment template
-├── SPEC.md                 # Detailed specification
-│
-├── airflow/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── dags/               # Pipeline definitions
-│
-├── superset/
-│   ├── Dockerfile
-│   └── superset_init.sh
-│
-├── sql/
-│   ├── 01_create_schemas.sql
-│   ├── 02_raw_tables.sql
-│   ├── 03_staging_tables.sql
-│   ├── 04_dw_tables.sql
-│   ├── 05_mart_tables.sql
-│   └── 06_quality_tables.sql
-│
-├── src/
-│   ├── connectors/         # Data source connectors
-│   ├── loaders/            # Data loading logic
-│   ├── transformers/       # Data transformation
-│   └── quality/            # Quality tracking
-│
-└── data/
-    ├── sample/             # Sample data files
-    └── raw/                # Landing zone (git-ignored)
-```
-
-## Data Layers
-
-| Layer | Schema | Purpose |
-|-------|--------|---------|
-| Raw | `raw.*` | Landing zone, data preserved as-is |
-| Staging | `staging.*` | Cleaned, validated, typed data |
-| Warehouse | `dw.*` | Star schema (dimensions + facts) |
-| Marts | `mart.*` | Pre-aggregated analytics views |
-| Quality | `quality.*` | Pipeline metrics and audit logs |
-
-## Running the Pipelines
-
-### 1. Start the Stack
-```bash
+```sh
+cp .env.example .env                    # set your own passwords here
 docker compose up -d
+docker compose logs -f sqlserver-init   # wait for "Database initialization complete!"
 ```
 
-### 2. Run Ingestion Pipeline
-1. Open Airflow: http://localhost:8080
-2. Enable and trigger `data_ingestion` DAG
-3. Wait for completion (~1 min)
+Then, in Airflow at http://localhost:8080, enable and trigger `data_ingestion`, then
+`data_transformation`. Superset is at http://localhost:8088. Logins: [docs/operations.md](docs/operations.md).
 
-### 3. Run Transformation Pipeline
-1. Enable and trigger `data_transformation` DAG
-2. Wait for completion (~1 min)
+## Checks
 
-### 4. View Dashboards
-1. Open Superset: http://localhost:8088
-2. Navigate to **SQL Lab** to explore data
-3. Create dashboards using pre-built views (see below)
-
-## Dashboards
-
-Two dashboards are available:
-
-### Sales Analytics Dashboard
-- Revenue, Orders, Customer KPIs
-- Daily sales trend
-- Sales by category
-- Top products by revenue
-- Customer segments
-
-### Data Quality Dashboard
-- Overall quality score
-- Records received vs stored
-- Quality trend over time
-- Pipeline run status
-
-See [superset/dashboards/DASHBOARD_SETUP.md](./superset/dashboards/DASHBOARD_SETUP.md) for detailed setup instructions.
-
-### Pre-built Dashboard Views
-```sql
--- Sales views
-SELECT * FROM dw.vw_sales_kpi_summary;
-SELECT * FROM dw.vw_daily_sales_trend;
-SELECT * FROM dw.vw_sales_by_category;
-SELECT * FROM dw.vw_top_products;
-
--- Quality views
-SELECT * FROM quality.vw_quality_summary;
-SELECT * FROM quality.vw_quality_by_source;
+```sh
+uv sync --extra dev
+uv run ruff check src/            # lint rules in pyproject.toml
+uv run ruff format --check src/   # one code format
+uv run mypy src/                  # every function typed
+uv run pytest src/tests/ -v       # cleaners, validators, connectors, quality tracker
 ```
 
-## Data Quality Tracking
+No CI: nothing runs these on push.
 
-Every pipeline run logs:
-- **Records Received**: Count extracted from source
-- **Records Stored**: Count successfully loaded
-- **Records Rejected**: Count failed validation
-- **Quality Score**: `(stored / received) × 100`
+## Layout
 
-Query the quality metrics:
-```sql
-SELECT
-    source_name,
-    records_received,
-    records_stored,
-    quality_score,
-    created_at
-FROM quality.ingestion_log
-ORDER BY created_at DESC;
+```
+airflow/    Airflow image and the two DAGs
+src/        connectors, loaders, transformers, quality tracker, tests
+sql/        warehouse tables and dashboard views, run in order at startup
+superset/   Superset image, config, connection bootstrap, dashboard guide
+data/       sample CSVs
+docs/       operations reference, diagrams
 ```
 
-## Common Commands
+## Docs
 
-```bash
-# Start all services
-docker compose up -d
-
-# Stop all services
-docker compose down
-
-# View logs
-docker compose logs -f <service-name>
-
-# Restart a specific service
-docker compose restart airflow-webserver
-
-# Reset everything (delete volumes)
-docker compose down -v
-
-# Connect to SQL Server
-docker exec -it mds_sqlserver /opt/mssql-tools18/bin/sqlcmd \
-    -S localhost -U sa -P 'YourStrong@Passw0rd123' -C
-```
-
-## Troubleshooting
-
-### SQL Server won't start
-- Ensure you have at least 2GB RAM allocated to Docker
-- Check the password meets SQL Server complexity requirements
-
-### Airflow tasks failing
-```bash
-# Check scheduler logs
-docker compose logs airflow-scheduler
-
-# Verify SQL Server connection
-docker exec mds_airflow_webserver python -c "
-from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
-hook = MsSqlHook(mssql_conn_id='mssql_default')
-print(hook.get_conn())
-"
-```
-
-### Superset can't connect to SQL Server
-- Verify SQL Server is healthy: `docker compose ps`
-- Check connection string in Superset uses `sqlserver` as hostname (not `localhost`)
-
-## Next Steps
-
-See [SPEC.md](./SPEC.md) for:
-- Detailed architecture diagrams
-- Star schema design
-- Implementation phases
-- Sample queries
+- [docs/operations.md](docs/operations.md): services and logins, data layers, views,
+  quality log, commands, troubleshooting.
+- [superset/dashboards/DASHBOARD_SETUP.md](superset/dashboards/DASHBOARD_SETUP.md): the two
+  dashboards, chart by chart.
+- [SPEC.md](SPEC.md): the original design spec. Where it differs from the code, the code wins.
+- [docs/diagrams/diagrams.py](docs/diagrams/diagrams.py): the scene script behind both diagrams.
