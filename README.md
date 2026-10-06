@@ -4,39 +4,11 @@ A containerized data engineering solution demonstrating end-to-end data pipeline
 
 ## Architecture
 
-```
-┌─────────────────┐     ┌─────────────────┐
-│   REST API      │     │   CSV Files     │
-└────────┬────────┘     └────────┬────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────────────────────────────┐
-│         INGESTION (Python/Airflow)      │
-└─────────────────────────────────────────┘
-                    │
-         ┌──────────┼──────────┐
-         ▼          ▼          ▼
-    ┌─────────┐ ┌─────────┐ ┌─────────┐
-    │   RAW   │ │ STAGING │ │   DW    │
-    │  Layer  │→│  Layer  │→│  Layer  │
-    └─────────┘ └─────────┘ └─────────┘
-                               │
-                    ┌──────────┴──────────┐
-                    ▼                     ▼
-              ┌───────────┐        ┌───────────┐
-              │ Data Marts│        │  Quality  │
-              │           │        │  Reports  │
-              └───────────┘        └───────────┘
-                    │                     │
-                    └──────────┬──────────┘
-                               ▼
-                    ┌─────────────────────┐
-                    │   Apache Superset   │
-                    │     Dashboards      │
-                    └─────────────────────┘
-```
+![Microsoft Data Stack architecture](docs/diagrams/architecture.excalidraw.svg)
 
 ## Tech Stack
+
+![Microsoft Data Stack tech stack](docs/diagrams/tech-stack.excalidraw.svg)
 
 | Component | Technology |
 |-----------|------------|
